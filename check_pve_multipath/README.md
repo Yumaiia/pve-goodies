@@ -81,6 +81,33 @@ snmpwalk -v3 -l authPriv -u <user> -a SHA -A '<auth>' -x AES -X '<priv>' <ip> NE
 
 Performance data per LUN: `<lun>_ok`, `<lun>_faulty`, `<lun>_active`, `<lun>_enabled`.
 
+### Check command
+
+**Configuration > Commands > Checks > Add**
+
+- Name: `App-Net-SNMP-Extend`
+- Command line:
+  ```
+  $CENTREONPLUGINS$/centreon_generic_snmp.pl --plugin=apps::protocols::snmp::plugin --mode=string-value --hostname=$HOSTADDRESS$ --snmp-version='$_HOSTSNMPVERSION$' $_HOSTSNMPEXTRAOPTIONS$ --oid='$_SERVICEEXTENDOID$' --warning-regexp='^WARNING' --critical-regexp='^(CRITICAL|UNKNOWN)' --format-ok='%{value}' --format-warning='%{value}' --format-critical='%{value}'
+  ```
+- Type: Check, then declare the `EXTENDOID` macro (type Service).
+
+The check writes its state at the start of its output line (`OK - `, `WARNING - `, ...), so the regular expressions recover the state and the full message is displayed. The command can be shared with other extend-based checks.
+
+### Service
+
+**Configuration > Services > Services by host > Add**
+
+| Field | Value |
+|---|---|
+| Description | `PVE-Multipath` |
+| Command | `App-Net-SNMP-Extend` |
+| `EXTENDOID` macro | `.1.3.6.1.4.1.8072.1.3.2.3.1.1.19.99.104.101.99.107.95.112.118.101.95.109.117.108.116.105.112.97.116.104` |
+| Check interval | 5 min |
+| Max check attempts | 3 |
+
+The OID is `nsExtendOutput1Line."check_pve_multipath"`, built from the name length (19) followed by the ASCII code of each character.
+
 ## Tests
 
 Unit tests use simulated `multipathd` output and need no root access:
