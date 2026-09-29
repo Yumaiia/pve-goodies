@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Nagios check: age of Proxmox VE snapshots (VMs and LXC containers, local node).
-v1.2 2026-09-29
+v1.3 2026-09-29
 Yumaiia - https://github.com/Yumaiia/pve-goodies/
 
 Run directly on the PVE host (uses pvesh locally, requires root or a user
@@ -9,17 +9,14 @@ with the appropriate PVE permissions).
 
 Usage:
     check_pve_snapshots.py --warn-hours 24 --crit-hours 72 [--node NODE]
-                           [--mode {nrpe,snmp}] [--cache-file FILE]
-    check_pve_snapshots.py --read-cache --cache-file FILE [--cache-max-age SEC]
+                           [--mode {nrpe,snmp}]
 
 Modes:
     nrpe  summary + perfdata on line 1, list of guests on line 2 (default)
     snmp  single line (snmpd "extend" only exposes the first line via
           nsExtendOutput1Line)
 
-The check is slow (one pvesh call per guest). snmpd blocks while an extend
-command runs, so under SNMP refresh a cache file from cron (--cache-file)
-and let snmpd only replay it (--read-cache).
+The check is slow (one pvesh call per guest): run it once an hour or so.
 
 NRPE example (/etc/nagios/nrpe.d/pve_snapshots.cfg, needs a matching sudoers rule):
     command[check_pve_snapshots]=/usr/bin/sudo -n /usr/bin/python3 /usr/local/bin/check_pve_snapshots.py --warn-hours 24 --crit-hours 72
@@ -27,11 +24,9 @@ NRPE example (/etc/nagios/nrpe.d/pve_snapshots.cfg, needs a matching sudoers rul
 
 import argparse
 import json
-import os
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 
 OK, WARNING, CRITICAL, UNKNOWN = 0, 1, 2, 3
@@ -39,42 +34,9 @@ STATUS_LABELS = {OK: "OK", WARNING: "WARNING", CRITICAL: "CRITICAL", UNKNOWN: "U
 
 
 MAX_NAMES = 10  # guest names listed in the single-line (snmp) output
-cache_file = None
 
 
 def finish(status, text):
-    """Print the result, store it in the cache file if requested, and exit."""
-    print(text)
-    if cache_file:
-        try:
-            d = os.path.dirname(cache_file) or "."
-            os.makedirs(d, exist_ok=True)
-            fd, tmp = tempfile.mkstemp(dir=d, prefix=".cache.")
-            with os.fdopen(fd, "w") as f:
-                json.dump({"status": status, "text": text, "ts": time.time()}, f)
-            os.chmod(tmp, 0o644)
-            os.replace(tmp, cache_file)
-        except OSError as e:
-            print(f"UNKNOWN - cannot write cache file {cache_file}: {e}", file=sys.stderr)
-    sys.exit(status)
-
-
-def replay_cache(path, max_age):
-    try:
-        with open(path) as f:
-            data = json.load(f)
-        status, text, ts = data["status"], data["text"], data["ts"]
-    except FileNotFoundError:
-        print(f"UNKNOWN - cache file not found: {path}")
-        sys.exit(UNKNOWN)
-    except (OSError, ValueError, KeyError, TypeError) as e:
-        print(f"UNKNOWN - unreadable cache file {path}: {e}")
-        sys.exit(UNKNOWN)
-    age = time.time() - ts
-    if age > max_age:
-        print(f"UNKNOWN - cached result is {age / 60:.0f} min old (max {max_age / 60:g} min), "
-              f"is the cron job running?")
-        sys.exit(UNKNOWN)
     print(text)
     sys.exit(status)
 
@@ -122,29 +84,13 @@ def get_snapshots(node, kind, vmid):
 
 def main():
     parser = argparse.ArgumentParser(description="Nagios check - age of Proxmox VE VM snapshots")
-    parser.add_argument("--warn-hours", type=float, help="WARNING threshold in hours")
-    parser.add_argument("--crit-hours", type=float, help="CRITICAL threshold in hours")
+    parser.add_argument("--warn-hours", type=float, required=True, help="WARNING threshold in hours")
+    parser.add_argument("--crit-hours", type=float, required=True, help="CRITICAL threshold in hours")
     parser.add_argument("--node", default=None, help="PVE node name (default: local hostname)")
     parser.add_argument("--mode", choices=("nrpe", "snmp"), default="nrpe",
                         help="nrpe: summary + guest list on 2 lines; snmp: single line (default: nrpe)")
-    parser.add_argument("--cache-file", default=None,
-                        help="store the result in this file (with --read-cache: file to replay)")
-    parser.add_argument("--read-cache", action="store_true",
-                        help="replay the result stored in --cache-file instead of querying PVE")
-    parser.add_argument("--cache-max-age", type=int, default=7200,
-                        help="with --read-cache: UNKNOWN if the cached result is older than this many seconds (default: 7200)")
     args = parser.parse_args()
 
-    if args.read_cache:
-        if not args.cache_file:
-            parser.error("--read-cache requires --cache-file")
-        replay_cache(args.cache_file, args.cache_max_age)
-
-    global cache_file
-    cache_file = args.cache_file
-
-    if args.warn_hours is None or args.crit_hours is None:
-        parser.error("--warn-hours and --crit-hours are required")
     if args.crit_hours <= args.warn_hours:
         finish(UNKNOWN, f"UNKNOWN - crit-hours ({args.crit_hours}) must be > warn-hours ({args.warn_hours})")
 
